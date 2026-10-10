@@ -1,11 +1,1 @@
-# Protect API keys
-.env
-.env.*
-*.env
-
-# Ignore Python environments
-.venv/
-
-# Ignore Python cache
-__pycache__/
-*.pyc
+.vs/
