@@ -1,6 +1,7 @@
 #STAART OF IMPORTS
 import os
 import requests
+from google import genai
 
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from pydantic import BaseModel
@@ -146,3 +147,73 @@ async def transcribe(file: UploadFile = File(...)):
     }
 
 # END OF SPEECH TO TEXT
+
+
+# START OF GEMINI PHRASE SUGGESTIONS
+
+class SuggestionRequest(BaseModel):
+    text: str
+
+
+@app.post("/suggest")
+def suggest(request: SuggestionRequest):
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Gemini API key not found"
+        )
+
+    if not request.text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Please enter a phrase"
+        )
+
+    try:
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=(
+                "You are helping someone use an AAC communication app. "
+                "The user has entered a partial phrase. "
+                "Suggest exactly three short, natural, first-person "
+                "sentences that could complete their phrase. "
+                "Preserve the user's original meaning when possible. "
+                "Do not assume a disability, emotion, or personal situation. "
+                "Return ONLY the three suggestions, one per line, "
+                "without numbering or explanations.\n\n"
+                f"Partial phrase: {request.text}"
+            )
+        )
+
+        if not response.text:
+            raise HTTPException(
+                status_code=502,
+                detail="Gemini returned no suggestions"
+            )
+
+        suggestions = [
+            line.strip().lstrip("123.-) ")
+            for line in response.text.splitlines()
+            if line.strip()
+        ]
+
+        return {
+            "status": "success",
+            "original_text": request.text,
+            "suggestions": suggestions[:3]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("GEMINI ERROR:", repr(e))
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini suggestion generation failed"
+        )
+
+# END OF GEMINI PHRASE SUGGESTIONS
