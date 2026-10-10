@@ -33,8 +33,15 @@ from dotenv import load_dotenv
 
 #Start of Code Imports 
 from practice import (
+    # Say It!
     get_say_it_exercises,
-    get_say_it_exercise
+    get_say_it_exercise,
+    check_say_it_attempt,
+
+    # Game 2: Match It!
+    get_match_it_rounds,
+    get_match_it_round,
+    check_match_it_answer
 )
 #End of Code Imports
 
@@ -513,3 +520,136 @@ def get_say_it_by_id(exercise_id: int):
 
 # END OF SAY IT! ENDPOINTS
 
+
+# ==========================================
+# SAY IT! FEEDBACK ENDPOINT
+# ==========================================
+
+class SayItAttempt(BaseModel):
+    exercise_id: int
+    transcription: str
+
+
+@app.post("/practice/say-it/check")
+@limiter.limit("30/minute")
+def check_say_it(
+    request: Request,
+    body: SayItAttempt
+):
+
+    if len(body.transcription) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=413,
+            detail="Transcription exceeds the 500-character limit"
+        )
+
+    result = check_say_it_attempt(
+        body.exercise_id,
+        body.transcription
+    )
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Practice exercise not found"
+        )
+
+    return {
+        "status": "success",
+        **result
+    }
+
+
+
+# ==========================================
+# GAME 2: MATCH IT! ENDPOINTS
+# ==========================================
+
+class MatchItAnswer(BaseModel):
+    round_id: int
+    selected_option: str
+
+
+@app.get("/practice/match-it")
+def list_match_it_rounds(difficulty: str | None = None):
+
+    if difficulty not in (None, "easy", "medium", "hard"):
+        raise HTTPException(
+            status_code=400,
+            detail="Difficulty must be easy, medium, or hard"
+        )
+
+    rounds = get_match_it_rounds(difficulty)
+
+    # Hide the correct answer from the frontend.
+    public_rounds = [
+        {
+            key: value
+            for key, value in round_data.items()
+            if key != "answer"
+        }
+        for round_data in rounds
+    ]
+
+    return {
+        "status": "success",
+        "game": "match-it",
+        "total": len(public_rounds),
+        "rounds": public_rounds
+    }
+
+
+@app.get("/practice/match-it/{round_id}")
+def get_match_it_by_id(round_id: int):
+
+    round_data = get_match_it_round(round_id)
+
+    if round_data is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Matching round not found"
+        )
+
+    public_round = {
+        key: value
+        for key, value in round_data.items()
+        if key != "answer"
+    }
+
+    return {
+        "status": "success",
+        "round": public_round
+    }
+
+
+@app.post("/practice/match-it/check")
+@limiter.limit("30/minute")
+def check_match_it(
+    request: Request,
+    body: MatchItAnswer
+):
+
+    result = check_match_it_answer(
+        body.round_id,
+        body.selected_option
+    )
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Matching round not found"
+        )
+
+    if result.get("error") == "invalid_option":
+        raise HTTPException(
+            status_code=400,
+            detail="Selected card is not part of this round"
+        )
+
+    return {
+        "status": "success",
+        **result
+    }
+
+
+# END OF MATCH IT! ENDPOINTS
