@@ -1,5 +1,6 @@
 import streamlit as st
 
+from sounds import play_success_sound
 
 def render_match_it(rounds, check_answer):
     # ==========================================
