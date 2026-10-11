@@ -8,6 +8,7 @@ import streamlit as st
 
 from games.matchItUI import render_match_it
 
+from myWordsUI import render_my_words
 
 # ==========================================
 # FRONTEND TO BACKEND CONNECTION
@@ -54,6 +55,19 @@ def speak_message(text):
     response.raise_for_status()
     return response.content
 
+def get_suggestions(text):
+    """
+    Request predictive AAC phrases from Gemini
+    through the existing FastAPI backend.
+    """
+    response = requests.post(
+        f"{API_BASE_URL}/suggest",
+        json={"text": text},
+        timeout=30
+    )
+
+    response.raise_for_status()
+    return response.json().get("suggestions", [])
 
 # ==========================================
 # STREAMLIT CONFIGURATION
@@ -522,38 +536,17 @@ elif page == "practice":
 # ==========================================
 # MY WORDS PAGE
 # ==========================================
-
 else:
-
-    st.markdown(
-        '<h2 style="text-align:center">My Words</h2>',
-        unsafe_allow_html=True
+    render_my_words(
+        get_suggestions,
+        speak_message
     )
-
-    st.write(
-        "Type your own message to communicate."
-    )
-
-    custom = st.text_area(
-        "What would you like to say?",
-        placeholder="Type your message here...",
-        height=140
-    )
-
-    if st.button(
-        "Use my message",
-        type="primary",
-        disabled=not custom.strip()
-    ):
-        update_message(custom.strip())
-        st.rerun()
-
 
 # ==========================================
 # MESSAGE DISPLAY AND ELEVENLABS SPEECH
 # ==========================================
 
-if page in ("talk", "words") and st.session_state.message:
+if page == "talk" and st.session_state.message:
 
     st.divider()
 
