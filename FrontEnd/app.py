@@ -74,8 +74,8 @@ def get_suggestions(text):
 # ==========================================
 
 st.set_page_config(
-    page_title="CodeRed Orion",
-    page_icon="💬",
+    page_title="AACE It!",
+    page_icon="🗣️✨",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -386,8 +386,8 @@ st.markdown(
 
 header = f'''
 <header class="orion-header">
-<h1>CodeRed Orion</h1>
-<p class="tagline">Communication at your own pace</p>
+<h1>AACE It!</h1>
+<p class="tagline">Your words. Your voice. Your way.</p>
 <nav class="orion-nav" aria-label="Main navigation">
 <div class="orion-menu">
 <a
