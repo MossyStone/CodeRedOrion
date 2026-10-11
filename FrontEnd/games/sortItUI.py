@@ -1,371 +1,276 @@
+"""AACE It! Say It! practice page, connected to FastAPI and ElevenLabs.
+
+Install in FrontEnd/sayItUI.py and call render_say_it_ui() from app.py.
+"""
+
+import os
+import requests
 import streamlit as st
 
-
-DEFAULT_EXERCISES = [
-    {"emoji": "👋", "phrase": "Hello!", "hint": "A friendly greeting."},
-    {"emoji": "💧", "phrase": "Water, please.", "hint": "Ask for a drink."},
-    {"emoji": "🆘", "phrase": "I need help.", "hint": "Ask someone for support."},
-    {"emoji": "🙏", "phrase": "Thank you.", "hint": "Show appreciation."},
-    {"emoji": "⏸️", "phrase": "I need a break.", "hint": "Let someone know you need a pause."},
-    {"emoji": "🔁", "phrase": "Please say that again.", "hint": "Ask someone to repeat something."},
-    {"emoji": "🍎", "phrase": "I would like something to eat.", "hint": "Tell someone you're hungry."},
-    {"emoji": "💬", "phrase": "I want to talk.", "hint": "Let someone know you want to communicate."},
-]
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def _init_state() -> None:
+def _init_state():
     defaults = {
-        "sayit_exercises": DEFAULT_EXERCISES.copy(),
+        "sayit_exercises": [],
         "sayit_index": 0,
         "sayit_completed": set(),
         "sayit_skipped": set(),
+        "sayit_attempted": set(),
         "sayit_feedback": None,
-        "sayit_recording": None,
-        "sayit_attempts": 0,
+        "sayit_transcript": None,
+        "sayit_audio": None,
+        "sayit_audio_source": None,
+        "sayit_recording_version": 0,
     }
-
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def _current_exercise() -> dict:
-    exercises = st.session_state.sayit_exercises or DEFAULT_EXERCISES
-    index = st.session_state.sayit_index % len(exercises)
-    return exercises[index]
-
-
-def _advance(*, completed: bool = False, skipped: bool = False) -> None:
-    exercises = st.session_state.sayit_exercises or DEFAULT_EXERCISES
-    current_index = st.session_state.sayit_index % len(exercises)
-
-    if completed:
-        st.session_state.sayit_completed.add(current_index)
-
-    if skipped:
-        st.session_state.sayit_skipped.add(current_index)
-
-    st.session_state.sayit_index = (
-        current_index + 1
-    ) % len(exercises)
-
+def _clear_attempt():
     st.session_state.sayit_feedback = None
-    st.session_state.sayit_recording = None
-    st.session_state.sayit_attempts = 0
+    st.session_state.sayit_transcript = None
+    st.session_state.sayit_audio = None
+    st.session_state.sayit_audio_source = None
+    st.session_state.sayit_recording_version += 1
 
 
-def render_say_it_ui(exercises: list[dict] | None = None) -> None:
-    """Render the Say It! interface inside a Streamlit app.
+def _advance(skipped=False):
+    current = st.session_state.sayit_index
+    if skipped:
+        st.session_state.sayit_skipped.add(current)
+    if st.session_state.sayit_exercises:
+        st.session_state.sayit_index = (current + 1) % len(st.session_state.sayit_exercises)
+    _clear_attempt()
 
-    Optional exercises can be passed as dictionaries containing:
-    phrase, and optionally emoji and hint.
+
+def _load_exercises():
+    response = requests.get(f"{API_BASE_URL}/practice/say-it", timeout=10)
+    response.raise_for_status()
+    exercises = response.json().get("exercises", [])
+    if not isinstance(exercises, list) or not exercises:
+        raise ValueError("The backend returned no Say It! exercises.")
+    return [item for item in exercises if isinstance(item, dict) and item.get("phrase")]
+
+
+def _speak(phrase):
+    response = requests.post(
+        f"{API_BASE_URL}/speak", json={"text": phrase}, timeout=35
+    )
+    response.raise_for_status()
+    if not response.content:
+        raise ValueError("The speech service returned no audio.")
+    return response.content
+
+
+def _transcribe(recording):
+    # Streamlit's st.audio_input produces WAV data.
+    response = requests.post(
+        f"{API_BASE_URL}/transcribe",
+        files={"file": ("sayit_recording.wav", recording.getvalue(), "audio/wav")},
+        timeout=75,
+    )
+    response.raise_for_status()
+    return response.json().get("transcription", "")
+
+
+def _check_phrase(exercise_id, transcript):
+    response = requests.post(
+        f"{API_BASE_URL}/practice/say-it/check",
+        json={"exercise_id": exercise_id, "transcription": transcript},
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def render_say_it_ui(exercises=None):
+    """Display the complete Say It! practice screen.
+
+    Pass backend exercise dictionaries optionally; otherwise fetch them from FastAPI.
     """
-
     _init_state()
 
-    if exercises:
-        st.session_state.sayit_exercises = [
-            {
-                "emoji": item.get("emoji", "💬"),
-                "phrase": item["phrase"],
-                "hint": item.get(
-                    "hint",
-                    "Take your time and try when you're ready."
-                ),
-            }
-            for item in exercises
-            if item.get("phrase")
-        ] or DEFAULT_EXERCISES
+    if exercises is not None:
+        valid = [item for item in exercises if isinstance(item, dict) and item.get("phrase")]
+        if valid:
+            st.session_state.sayit_exercises = valid
+
+    if not st.session_state.sayit_exercises:
+        try:
+            with st.spinner("Loading practice phrases..."):
+                st.session_state.sayit_exercises = _load_exercises()
+        except (requests.RequestException, ValueError) as error:
+            st.error(f"Couldn't load Say It! exercises: {error}")
+            st.info("Make sure your FastAPI backend is running on port 8000.")
+            if st.button("Try loading again", key="sayit_reload"):
+                st.rerun()
+            return
 
     items = st.session_state.sayit_exercises
     total = len(items)
-    current_index = st.session_state.sayit_index % total
-    exercise = _current_exercise()
-    completed_count = len(st.session_state.sayit_completed)
+    index = st.session_state.sayit_index % total
+    exercise = items[index]
+    phrase = str(exercise["phrase"])
+    emoji = str(exercise.get("emoji", "💬"))
+    hint = str(exercise.get("hint", "Take your time and try when you're ready."))
+    exercise_id = exercise.get("id")
 
+    st.markdown("""
+    <style>
+    .sayit-eyebrow {color:#7da7d8;font-weight:750;letter-spacing:.08em;text-transform:uppercase;}
+    .sayit-phrase-card {background:linear-gradient(135deg,#f9fcff,#edf5ff);
+        border:2px solid #c7d9ee;border-radius:22px;padding:30px 20px;
+        text-align:center;margin:16px 0;color:#17365d;}
+    .sayit-emoji {font-size:4rem;}
+    .sayit-phrase {font-size:clamp(1.8rem,4vw,3rem);font-weight:800;
+        margin:12px 0;overflow-wrap:anywhere;}
+    .sayit-hint {font-size:1rem;color:#52677d;}
+    div.stButton > button {min-height:3rem;white-space:normal;}
+    button:focus-visible,textarea:focus-visible {outline:3px solid #e69f00 !important;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="sayit-eyebrow">🎤 Communication practice</div>', unsafe_allow_html=True)
+    st.title("Say It!")
+    st.write(f"**Phrase {index + 1} of {total}** · **{len(st.session_state.sayit_completed)} completed**")
+    st.progress(len(st.session_state.sayit_completed) / total, text="Practice progress")
+    st.caption("Listen, record when you're ready, or skip. Speaking is optional; your AAC tools remain available.")
+
+    # The exercise content comes from the local backend, not arbitrary HTML.
+    import html
     st.markdown(
-        
-        <style>
-        .sayit-wrap {
-            max-width: 980px;
-            margin: 0 auto;
-        }
-
-        .sayit-eyebrow {
-            color: #486581;
-            font-size: 0.95rem;
-            font-weight: 750;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-        }
-
-        .sayit-intro {
-            color: #486581;
-            font-size: 1.08rem;
-            line-height: 1.65;
-        }
-
-        .sayit-phrase-card {
-            background: linear-gradient(
-                135deg, #ffffff 0%, #f1f7ff 100%
-            );
-            border: 2px solid #c7d9ee;
-            border-radius: 24px;
-            padding: clamp(24px, 5vw, 48px) 22px;
-            text-align: center;
-            box-shadow: 0 8px 26px rgba(31, 67, 104, .07);
-        }
-
-        .sayit-emoji {
-            font-size: clamp(3.3rem, 8vw, 5.4rem);
-            line-height: 1.2;
-        }
-
-        .sayit-phrase {
-            color: #17365d;
-            font-size: clamp(2rem, 5.2vw, 3.3rem);
-            font-weight: 800;
-            line-height: 1.22;
-            margin: 18px 0 12px;
-            overflow-wrap: anywhere;
-        }
-
-        .sayit-hint {
-            color: #52677d;
-            font-size: 1.03rem;
-        }
-
-        .sayit-note {
-            background: #f5f8fc;
-            border-left: 5px solid #7a9fc8;
-            border-radius: 10px;
-            padding: 14px 16px;
-            color: #29445f;
-            line-height: 1.55;
-        }
-
-        div.stButton > button {
-            min-height: 3.35rem;
-            border-radius: 13px;
-            font-weight: 700;
-            white-space: normal;
-            padding: .65rem 1rem;
-        }
-
-        div.stButton > button:focus-visible,
-        button:focus-visible,
-        input:focus-visible,
-        textarea:focus-visible {
-            outline: 4px solid #e69f00 !important;
-            outline-offset: 3px !important;
-        }
-
-        [data-testid="stAudioInput"] {
-            border-radius: 14px;
-        }
-
-        @media (max-width: 640px) {
-            .sayit-phrase-card {
-                border-radius: 18px;
-            }
-        }
-        </style>
-        
+        '<section class="sayit-phrase-card" aria-label="Phrase to practice">'
+        f'<div class="sayit-emoji" aria-hidden="true">{html.escape(emoji)}</div>'
+        f'<div class="sayit-phrase">{html.escape(phrase)}</div>'
+        f'<div class="sayit-hint">{html.escape(hint)}</div>'
+        '</section>',
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        '<div class="sayit-wrap">',
-        unsafe_allow_html=True
-    )
+    st.subheader("🔊 Listen to the example")
+    if st.button("🔊 Play example", key="sayit_listen", use_container_width=True):
+        try:
+            with st.spinner("Generating example speech..."):
+                st.session_state.sayit_audio = _speak(phrase)
+                st.session_state.sayit_audio_source = (index, phrase)
+        except (requests.RequestException, ValueError) as error:
+            st.error(f"Couldn't play the example: {error}")
 
-    top_left, top_right = st.columns(
-        [3, 2],
-        vertical_alignment="center"
-    )
+    if st.session_state.sayit_audio is not None and st.session_state.sayit_audio_source == (index, phrase):
+        st.audio(st.session_state.sayit_audio, format="audio/mpeg")
 
-    with top_left:
-        st.markdown(
-            '<div class="sayit-eyebrow">'
-            '🎤 Communication practice</div>',
-            unsafe_allow_html=True
-        )
-        st.title("Say It!")
+    st.divider()
+    st.subheader("🎙️ Your turn")
+    st.caption("Record yourself saying the phrase. You can listen to your recording before checking it.")
 
-    with top_right:
-        st.markdown(
-            f"**Phrase {current_index + 1} of {total}**  ·  "
-            f"**{completed_count} completed**"
-        )
-        st.progress(
-            completed_count / total if total else 0.0,
-            text="Practice progress"
-        )
-
-    st.markdown(
-        '<p class="sayit-intro">'
-        'Practice speaking one phrase at a time, at your own pace. '
-        'You can listen first, record when you feel ready, or skip any '
-        'phrase. Speaking is optional—your other communication tools '
-        'remain available.</p>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f"""
-        <section class="sayit-phrase-card" aria-label="Phrase to practice">
-          <div class="sayit-emoji" aria-hidden="true">
-            {exercise["emoji"]}
-          </div>
-          <div class="sayit-phrase">{exercise["phrase"]}</div>
-          <div class="sayit-hint">
-            {exercise.get("hint", "Take your time.")}
-          </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-
-    listen_col, record_col = st.columns(2, gap="medium")
-
-    with listen_col:
-        if st.button(
-            "🔊  Listen to example",
-            use_container_width=True,
-            key="sayit_listen",
-        ):
-            # TODO: Call your ElevenLabs speech endpoint.
-            # Render its returned audio using st.audio(...).
-            st.session_state.sayit_feedback = {
-                "kind": "info",
-                "message": (
-                    "Example pronunciation will play here once "
-                    "the ElevenLabs endpoint is connected."
-                ),
-            }
-
-    with record_col:
-        st.markdown("**🎙️ Your turn**")
-        st.caption(
-            "Use the recorder below, say the phrase if you feel ready, "
-            "then stop recording."
-        )
-
-    # The recording is not uploaded in this frontend-only version.
-    audio_value = st.audio_input(
+    # A new key ensures an old recording is never submitted for the next exercise.
+    recording = st.audio_input(
         "Record your attempt",
-        key=f"sayit_audio_{current_index}",
+        key=f"sayit_audio_{index}_{st.session_state.sayit_recording_version}",
     )
+    if recording is not None:
+        st.audio(recording)
 
-    if audio_value is not None:
-        st.session_state.sayit_recording = audio_value
+    if st.button(
+        "Check my phrase",
+        key="sayit_check",
+        type="primary",
+        use_container_width=True,
+        disabled=(recording is None or exercise_id is None),
+    ):
+        try:
+            with st.spinner("Transcribing your recording..."):
+                transcript = _transcribe(recording)
+            st.session_state.sayit_transcript = transcript
+            st.session_state.sayit_attempted.add(index)
 
-        st.audio(audio_value)
+            if not transcript.strip():
+                st.session_state.sayit_feedback = {
+                    "kind": "warning",
+                    "message": "We couldn't detect speech in that recording. You can try again or skip.",
+                }
+            else:
+                with st.spinner("Checking your phrase..."):
+                    result = _check_phrase(exercise_id, transcript)
 
-        st.markdown(
-            '<div class="sayit-note">'
-            '<strong>Recording ready.</strong> '
-            'Your recording has not been submitted. Backend transcription '
-            'and phrase matching will be connected here.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+                # Preserve the backend's feedback, without assuming a specific result schema.
+                message = (
+                    result.get("feedback") or result.get("message")
+                    or result.get("explanation")
+                )
+                if isinstance(message, dict):
+                    message = message.get("message") or str(message)
+                if not isinstance(message, str) or not message:
+                    message = "Your attempt was checked. Review the transcription below."
 
-        if st.button(
-            "Check my phrase",
-            type="primary",
-            use_container_width=True,
-            key="sayit_check",
-        ):
-            # TODO:
-            # 1. Send audio_value.getvalue() to the transcription endpoint.
-            # 2. Get the transcript.
-            # 3. Send the transcript and target phrase to the
-            #    response-checking endpoint.
+                success = result.get("correct") is True or result.get("is_correct") is True
+                if success:
+                    st.session_state.sayit_completed.add(index)
+                    st.session_state.sayit_skipped.discard(index)
+
+                st.session_state.sayit_feedback = {
+                    "kind": "success" if success else "info",
+                    "message": message,
+                    "result": result,
+                }
+        except (requests.RequestException, ValueError) as error:
             st.session_state.sayit_feedback = {
-                "kind": "info",
-                "message": (
-                    "Your recording is ready. Phrase checking will be "
-                    "enabled when the transcription and response-check "
-                    "endpoints are connected."
-                ),
+                "kind": "error",
+                "message": f"Couldn't check your recording: {error}",
             }
+
+    if exercise_id is None:
+        st.info("This exercise has no backend ID, so automatic checking is unavailable.")
+
+    if st.session_state.sayit_transcript is not None:
+        st.write("**What the speech recognizer heard:**")
+        st.write(st.session_state.sayit_transcript or "(No speech detected)")
+        st.caption("Automatic transcription can make mistakes, especially with atypical speech. It is not a measure of communication ability.")
 
     feedback = st.session_state.sayit_feedback
-
     if feedback:
         kind = feedback.get("kind", "info")
         message = feedback.get("message", "")
-
         if kind == "success":
-            st.success(message, icon="🌟")
+            st.success(message)
         elif kind == "warning":
-            st.warning(message, icon="💛")
+            st.warning(message)
+        elif kind == "error":
+            st.error(message)
         else:
-            st.info(message, icon="💬")
+            st.info(message)
+        result = feedback.get("result")
+        if isinstance(result, dict):
+            with st.expander("See checking details"):
+                st.json(result)
 
-    st.markdown("#### Remember")
+    st.divider()
+    st.info("There is no rush or penalty for trying again. You can use AAC, type, or take a break whenever you need.")
 
-    st.markdown(
-        '<div class="sayit-note">'
-        'There is no rush and no penalty for trying again. '
-        'You can speak, use AAC, type, or take a break whenever you need.'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-
-    try_col, skip_col, next_col = st.columns(
-        [1.15, 1, 1.25],
-        gap="small"
-    )
-
-    with try_col:
-        if st.button(
-            "↻  Try again",
-            use_container_width=True,
-            key="sayit_retry",
-        ):
-            st.session_state.sayit_recording = None
-            st.session_state.sayit_feedback = None
-            st.session_state.sayit_attempts = 0
+    retry_col, skip_col, next_col = st.columns(3)
+    with retry_col:
+        if st.button("↻ Try again", use_container_width=True, key="sayit_retry"):
+            _clear_attempt()
             st.rerun()
-
     with skip_col:
-        if st.button(
-            "Skip phrase",
-            use_container_width=True,
-            key="sayit_skip",
-        ):
+        if st.button("Skip phrase", use_container_width=True, key="sayit_skip"):
             _advance(skipped=True)
             st.rerun()
-
     with next_col:
-        if st.button(
-            "Next phrase  →",
-            type="primary",
-            use_container_width=True,
-            key="sayit_next",
-        ):
-            _advance(completed=True)
+        if st.button("Next phrase →", use_container_width=True, key="sayit_next"):
+            _advance(skipped=False)
             st.rerun()
 
     st.caption(
-        f"Completed: {completed_count} of {total} · "
+        f"Completed: {len(st.session_state.sayit_completed)} of {total} · "
+        f"Attempted: {len(st.session_state.sayit_attempted)} · "
         f"Skipped: {len(st.session_state.sayit_skipped)} · "
-        "Your progress is stored for this session only."
+        "Progress is stored for this session only."
     )
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
-    st.set_page_config(
-        page_title="Say It! | CodeRed Orion",
-        page_icon="🎤",
-        layout="centered",
-    )
+    st.set_page_config(page_title="Say It! | AACE It!", page_icon="🎤", layout="centered")
     render_say_it_ui()
