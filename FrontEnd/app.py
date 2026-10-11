@@ -2,6 +2,40 @@ import html
 from urllib.parse import quote
 import streamlit as st
 
+#Connecting FRont to back end
+import os
+import requests
+
+from games.matchItUI import render_match_it
+
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "http://127.0.0.1:8000"
+)
+
+def get_match_it_rounds():
+    response = requests.get(
+        f"{API_BASE_URL}/practice/match-it",
+        timeout=10
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def check_match_it_answer(round_id, selected_option):
+    response = requests.post(
+        f"{API_BASE_URL}/practice/match-it/check",
+        json={
+            "round_id": round_id,
+            "selected_option": selected_option
+        },
+        timeout=10
+    )
+    response.raise_for_status()
+    return response.json()
+#end of connecting front to back end
+
+
 st.set_page_config(page_title="CodeRed Orion", page_icon="💬", layout="wide", initial_sidebar_state="collapsed")
 
 CATEGORIES = {
@@ -98,9 +132,24 @@ if page == "talk":
                         st.rerun()
 
 elif page == "practice":
-    st.markdown(f'<h2 style="text-align:center">{"🎤 Say It!" if game == "say-it" else "🧩 Match It!"}</h2>', unsafe_allow_html=True)
-    st.info("Game interface placeholder. Your Backend/practice.py logic can be connected here next.")
+    if game == "match-it":
+        try:
+            data = get_match_it_rounds()
 
+            render_match_it(
+                data["rounds"],
+                check_match_it_answer
+            )
+
+        except requests.exceptions.RequestException as error:
+            st.error(f"Unable to load Match It!: {error}")
+
+    else:
+        st.markdown(
+            '<h2 style="text-align:center">🎤 Say It!</h2>',
+            unsafe_allow_html=True
+        )
+        st.info("Say It! is coming next.")
 else:
     st.markdown('<h2 style="text-align:center">My Words</h2>', unsafe_allow_html=True)
     st.write("Type your own message to communicate.")
